@@ -1,0 +1,28 @@
+; Файл проекта Godot.
+; Сгенерирован вручную; формат config_version=5 (Godot 4.x).
+
+config_version=5
+
+[application]
+
+config/name="NodeZero"
+config/description="Стратегический симулятор пандемии на гексагональной карте с компартментальной SEIR-моделью."
+run/main_scene="res://src/app/Main.tscn"
+config/features=PackedStringArray("4.7", "C#", "Forward Plus")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1600
+window/size/viewport_height=900
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[dotnet]
+
+project/assembly_name="NodeZero"
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+environment/defaults/default_clear_color=Color(0.043, 0.055, 0.075, 1)

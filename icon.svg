@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <!--
+    Иконка проекта: гекс карты с очагом заражения.
+    Сгенерирована вручную, внешних ассетов у проекта нет.
+  -->
+  <rect width="128" height="128" rx="18" fill="#0b0e13"/>
+  <g transform="translate(64 66)">
+    <polygon
+      points="0,-44 38,-22 38,22 0,44 -38,22 -38,-22"
+      fill="#1a4d2e" stroke="#0b0e13" stroke-width="3"/>
+    <polygon
+      points="0,-22 19,-11 19,11 0,22 -19,11 -19,-11"
+      fill="#e03737" stroke="#0b0e13" stroke-width="2"/>
+    <circle cx="0" cy="0" r="6" fill="#ffe369"/>
+  </g>
+</svg>
