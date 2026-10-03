@@ -1,8 +1,298 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using NodeZero.Core;
 
 namespace NodeZero.App.Ui;
+
+/// <summary>
+/// Верхняя полоса: мировые показатели, состояние науки и управление темпом времени.
+///
+/// <para>Полоса собрана вручную, без контейнеров, и именно поэтому она не «скачет».
+/// Обычные HBox- и GridContainer пересчитывают ширины от текста: стоит числу
+/// вырасти на два знака, как все соседние элементы сдвигаются. Здесь у каждой
+/// подписи фиксированная позиция и ширина, текст обрезается многоточием, а сама
+/// подпись переписывается только при реальном изменении значения и не чаще
+/// заданной частоты.</para>
+/// </summary>
+public partial class TopBar : Panel
+{
+    private const float StatsLeft = 12.0f;
+    private const float BarHeight = 46.0f;
+    private const double BaseSpeed = 2.0;
+
+    private Label _date = null!;
+    private Label _infectious = null!;
+    private Label _dead = null!;
+    private Label _coverage = null!;
+    private Label _rt = null!;
+    private Label _dna = null!;
+    private Label _science = null!;
+    private Label _status = null!;
+    private Button _pause = null!;
+    private Button _start = null!;
+
+    private SimulationEngine? _engine;
+    private double _speed = 2.0;
+    private bool _startVisible;
+    private double _lastUpdateSeconds;
+
+    /// <summary>Скорость в сутках на реальную секунду.</summary>
+    public double Speed => _speed;
+
+    /// <summary>Событие темпа времени: значение меньше нуля означает «новая карта».</summary>
+    public event System.Action<double>? SpeedChanged;
+
+    /// <summary>Событие «выбрать случайный старт».</summary>
+    public event System.Action? RandomStartRequested;
+
+    public override void _Ready()
+    {
+        AddThemeStyleboxOverride("panel", PanelStyle());
+        CustomMinimumSize = new Vector2(0, BarHeight);
+        MouseFilter = MouseFilterEnum.Ignore;
+
+        _date = AddStat(StatsLeft, 0.0f, 96.0f, "День 0", 13, MapPalette.TextPrimary);
+        _infectious = AddStat(StatsLeft + 100.0f, 0.0f, 116.0f, "Инф. 0", 13, MapPalette.Danger);
+        _dead = AddStat(StatsLeft + 222.0f, 0.0f, 104.0f, "Умерло 0", 13, MapPalette.TextMuted);
+        _coverage = AddStat(StatsLeft + 330.0f, 0.0f, 92.0f, "Охват 0%", 13, MapPalette.TextPrimary);
+        _rt = AddStat(StatsLeft + 426.0f, 0.0f, 74.0f, "R_t 0", 13, MapPalette.Accent);
+        _dna = AddStat(StatsLeft + 504.0f, 0.0f, 88.0f, "ДНК 0", 13, MapPalette.Success);
+
+        _science = AddStat(StatsLeft + 600.0f, 3.0f, 300.0f, string.Empty, 11, MapPalette.Accent);
+        _status = AddStat(StatsLeft + 600.0f, 21.0f, 300.0f, string.Empty, 13, MapPalette.Warning);
+
+        // Порядок создания обратен порядку слева направо: кнопки раскладываются
+        // от правого края, поэтому первая созданная оказывается самой левой.
+        _start = AddButton("Случайный старт", 118.0f, () => RandomStartRequested?.Invoke());
+        _start.Visible = false;
+
+        _pause = AddButton("Пауза", 78.0f, () => SetSpeed(_speed > 0.0 ? 0.0 : BaseSpeed));
+        AddButton("x1", 40.0f, () => SetSpeed(1.0));
+        AddButton("x3", 40.0f, () => SetSpeed(3.0));
+        AddButton("x8", 40.0f, () => SetSpeed(8.0));
+        AddButton("Новая карта", 104.0f, () => SpeedChanged?.Invoke(-1.0));
+
+        Relayout();
+    }
+
+    /// <summary>Показать или спрятать кнопку случайного старта.</summary>
+    public void SetStartButtonVisible(bool visible)
+    {
+        _startVisible = visible;
+        _start.Visible = visible;
+        Relayout();
+    }
+
+    public void Bind(SimulationEngine engine)
+    {
+        _engine = engine;
+        _lastUpdateSeconds = -1.0;
+        SetSpeed(_speed);
+        Refresh(force: true);
+    }
+
+    public void SetSpeed(double speed)
+    {
+        _speed = speed;
+        if (_pause is not null)
+        {
+            _pause.Text = speed > 0.0 ? "Пауза" : "Продолжить";
+        }
+
+        SpeedChanged?.Invoke(speed);
+        Refresh(force: true);
+    }
+
+    /// <summary>
+    /// Обновить показатели. Значения округляются до читаемых величин, а подписи
+    /// переписываются не чаще шести раз в секунду — иначе числа мельтешат.
+    /// </summary>
+    public void Refresh(bool force = false, double nowSeconds = 0.0)
+    {
+        if (_engine is null)
+        {
+            return;
+        }
+
+        if (!force)
+        {
+            if (_engine.Status != GameStatus.Running && _status.Text.Length == 0)
+            {
+                return;
+            }
+
+            if (nowSeconds - _lastUpdateSeconds < 0.16)
+            {
+                return;
+            }
+        }
+
+        _lastUpdateSeconds = nowSeconds;
+
+        SimulationEngine engine = _engine;
+        double coverage = engine.TotalInfectedEver / Math.Max(1e-9, engine.Map.TotalPopulation) * 100.0;
+
+        SetText(_date, $"День {engine.Day:0} · {engine.Years:0.00} г");
+        SetText(_infectious, $"Инф. {WorldGenerator.FormatPopulation(engine.TotalInfectious)}");
+        SetText(_dead, $"Умерло {WorldGenerator.FormatPopulation(engine.TotalDead)}");
+        SetText(_coverage, $"Охват {coverage:0.##}%");
+        SetText(_rt, $"R_t {engine.InstantaneousReproduction:0.00}");
+        SetText(_dna, $"ДНК {engine.Pathogen.AvailableDna:0.#}");
+
+        SetText(_science,
+            $"Наука {engine.Research.Progress:0} / {NextTarget(engine)}   " +
+            $"лекарство {engine.Research.CureEffectiveness * 100.0:0}%   " +
+            $"{(engine.Research.Identified ? "патоген известен науке" : "патоген не идентифицирован")}");
+
+        string status = DescribeStatus(engine);
+        SetText(_status, status);
+        _status.AddThemeColorOverride("font_color", StatusColor(engine.Status));
+    }
+
+    /// <summary>Заставить полосу перерисоваться немедленно.</summary>
+    public void Invalidate() => _lastUpdateSeconds = -1.0;
+
+    private static string NextTarget(SimulationEngine engine) =>
+        engine.Research.Stage == ResearchStage.None
+            ? engine.Config.CureThreshold.ToString("0")
+            : engine.Config.VaccineThreshold.ToString("0");
+
+    private static string DescribeStatus(SimulationEngine engine) => engine.Status switch
+    {
+        GameStatus.Victory => "ПОБЕДА: патоген охватил планету",
+        GameStatus.DefeatExtinct => "ПОРАЖЕНИЕ: носителей не осталось",
+        _ when engine.Research.Stage == ResearchStage.Vaccine => "Вакцина идёт по миру",
+        _ when engine.Research.Setting == ResearchLevel.Off => "Наука молчит — учёные скоро заметят",
+        _ => "Мир изучает патоген",
+    };
+
+    private static Color StatusColor(GameStatus status) => status switch
+    {
+        GameStatus.Victory => MapPalette.Success,
+        GameStatus.DefeatExtinct => MapPalette.Danger,
+        _ => MapPalette.Warning,
+    };
+
+    // --- Раскладка ---
+
+    private void Relayout()
+    {
+        if (_pause is null)
+        {
+            return;
+        }
+
+        float width = Size.X > 1.0f ? Size.X : GetViewportRect().Size.X;
+
+        float right = width - 10.0f;
+
+        var ordered = new List<Button>();
+        foreach (Node child in GetChildren())
+        {
+            if (child is Button button)
+            {
+                ordered.Add(button);
+            }
+        }
+
+        for (int i = ordered.Count - 1; i >= 0; i--)
+        {
+            Button button = ordered[i];
+            if (!button.Visible)
+            {
+                continue;
+            }
+
+            right -= button.CustomMinimumSize.X;
+            button.Position = new Vector2(right, 9.0f);
+            button.Size = new Vector2(button.CustomMinimumSize.X, 26.0f);
+            right -= 6.0f;
+        }
+
+        float statusWidth = Mathf.Max(0.0f, right - (StatsLeft + 600.0f) - 8.0f);
+        bool showStatus = statusWidth >= 150.0f;
+        _science.Visible = showStatus;
+        _status.Visible = showStatus;
+        if (showStatus)
+        {
+            _science.Size = new Vector2(statusWidth, 16.0f);
+            _status.Size = new Vector2(statusWidth, 18.0f);
+        }
+    }
+
+    public override void _Notification(int what)
+    {
+        if (what == NotificationResized)
+        {
+            Relayout();
+        }
+    }
+
+    // --- Помощники ---
+
+    private Label AddStat(float x, float y, float width, string text, int fontSize, Color color)
+    {
+        var label = new Label
+        {
+            Text = text,
+            Position = new Vector2(x, y),
+            CustomMinimumSize = new Vector2(width, 18.0f),
+            Size = new Vector2(width, 18.0f),
+            MouseFilter = MouseFilterEnum.Ignore,
+            ClipText = true,
+            TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+        };
+        label.AddThemeFontSizeOverride("font_size", fontSize);
+        label.AddThemeColorOverride("font_color", color);
+        AddChild(label);
+        return label;
+    }
+
+    private Button AddButton(string text, float width, Action action)
+    {
+        var button = new Button
+        {
+            Text = text,
+            CustomMinimumSize = new Vector2(width, 26.0f),
+            TooltipText = TooltipFor(text),
+        };
+        button.AddThemeFontSizeOverride("font_size", 12);
+        button.Pressed += action;
+        AddChild(button);
+        return button;
+    }
+
+    private static string TooltipFor(string text) => text switch
+    {
+        "Пауза" or "Продолжить" => "Пробел",
+        "x1" => "Клавиша 1",
+        "x3" => "Клавиша 2",
+        "x8" => "Клавиша 3",
+        "Новая карта" => "Клавиша N",
+        _ => string.Empty,
+    };
+
+    private static void SetText(Label label, string value)
+    {
+        if (label.Text != value)
+        {
+            label.Text = value;
+        }
+    }
+
+    internal static StyleBoxFlat PanelStyle()
+    {
+        var style = new StyleBoxFlat
+        {
+            BgColor = MapPalette.PanelBackground,
+            BorderColor = MapPalette.PanelBorder,
+        };
+        style.SetBorderWidthAll(1);
+        style.SetCornerRadiusAll(4);
+        return style;
+    }
+}
 
 /// <summary>
 /// Панель свойств выбранного региона. Показывает всё, на чём держится решение
@@ -22,17 +312,16 @@ public partial class HexInspector : PanelContainer
         var margin = new MarginContainer();
         margin.AddThemeConstantOverride("margin_left", 12);
         margin.AddThemeConstantOverride("margin_right", 12);
-        margin.AddThemeConstantOverride("margin_top", 10);
-        margin.AddThemeConstantOverride("margin_bottom", 10);
-        margin.SetAnchorsPreset(LayoutPreset.FullRect);
+        margin.AddThemeConstantOverride("margin_top", 8);
+        margin.AddThemeConstantOverride("margin_bottom", 8);
         AddChild(margin);
 
         var box = new VBoxContainer();
-        box.AddThemeConstantOverride("separation", 6);
+        box.AddThemeConstantOverride("separation", 4);
         margin.AddChild(box);
 
         _title = new Label { Text = "Регион не выбран" };
-        _title.AddThemeFontSizeOverride("font_size", 16);
+        _title.AddThemeFontSizeOverride("font_size", 15);
         _title.AddThemeColorOverride("font_color", MapPalette.Accent);
         box.AddChild(_title);
 
@@ -42,7 +331,7 @@ public partial class HexInspector : PanelContainer
             AutowrapMode = TextServer.AutowrapMode.WordSmart,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
-        _body.AddThemeFontSizeOverride("font_size", 13);
+        _body.AddThemeFontSizeOverride("font_size", 12);
         box.AddChild(_body);
     }
 
@@ -73,185 +362,28 @@ public partial class HexInspector : PanelContainer
         double deadShare = cell.Dead / Math.Max(1e-9, scale) * 100.0;
         double covered = cell.Susceptible / Math.Max(1e-9, scale) * 100.0;
 
-        _title.Text = $"{cell.Coord} — {ClimateData.Name(cell.Climate)}";
-
-        _body.Text = string.Join(
+        string text = string.Join(
             System.Environment.NewLine,
-            $"Население: {WorldGenerator.FormatPopulation(cell.Population)}",
-            $"Медицина: {cell.Healthcare * 100.0:0.#}%",
-            $"Городское: {cell.Urbanization * 100.0:0.#}%",
-            $"Открытая вода: {cell.WaterAvailability * 100.0:0.#}%",
-            $"Переносчики: {cell.VectorHabitat * 100.0:0.#}%",
+            $"Население: {WorldGenerator.FormatPopulation(cell.Population)}   " +
+            $"медицина: {cell.Healthcare * 100.0:0.#}%",
+            $"Город: {cell.Urbanization * 100.0:0.#}%   вода: {cell.WaterAvailability * 100.0:0.#}%   " +
+            $"переносчики: {cell.VectorHabitat * 100.0:0.#}%",
             $"Скот: {cell.Livestock * 100.0:0.#}%",
             string.Empty,
-            $"Не заражены: {covered:0.#}%",
-            $"Инфекционные: {WorldGenerator.FormatPopulation(cell.Infectious)} ({infectiousShare:0.###}%)",
-            $"Переболели: {WorldGenerator.FormatPopulation(cell.Recovered)}",
-            $"Умерли: {WorldGenerator.FormatPopulation(cell.Dead)} ({deadShare:0.#}%)",
-            $"Вакцинация: {cell.VaccineCoverage * 100.0:0.#}%",
-            string.Empty,
-            $"Контактный вес: {_engine.RelativeContactWeight(cellIndex):0.000} (мировое среднее 1.000)",
-            $"Восприимчивость к патогену: {_engine.Pathogen.ClimateSusceptibility(cell.Climate) * 100.0:0.#}%");
+            $"Не заражены: {covered:0.#}%   инфекционные: {infectiousShare:0.###}%",
+            $"Переболели: {WorldGenerator.FormatPopulation(cell.Recovered)}   " +
+            $"умерли: {WorldGenerator.FormatPopulation(cell.Dead)} ({deadShare:0.#}%)",
+            $"Вакцинация: {cell.VaccineCoverage * 100.0:0.#}%");
+
+        _title.Text = $"{cell.Coord} — {ClimateData.Name(cell.Climate)}";
+        SetBody(text);
     }
-}
 
-/// <summary>Сводная полоса сверху: дата, мировые показатели, исследование, темп времени.</summary>
-public partial class TopBar : PanelContainer
-{
-    private Label _world = null!;
-    private Label _research = null!;
-    private Label _status = null!;
-    private Label _speedLabel = null!;
-    private SimulationEngine? _engine;
-
-    public event System.Action<double>? SpeedChanged;
-
-    public double Speed { get; private set; } = 2.0;
-
-    public override void _Ready()
+    private void SetBody(string text)
     {
-        AddThemeStyleboxOverride("panel", PanelStyle());
-
-        var margin = new MarginContainer();
-        margin.AddThemeConstantOverride("margin_left", 14);
-        margin.AddThemeConstantOverride("margin_right", 14);
-        margin.AddThemeConstantOverride("margin_top", 8);
-        margin.AddThemeConstantOverride("margin_bottom", 8);
-        margin.SetAnchorsPreset(LayoutPreset.FullRect);
-        AddChild(margin);
-
-        var row = new HBoxContainer();
-        row.AddThemeConstantOverride("separation", 18);
-        margin.AddChild(row);
-
-        _world = MakeLabel(row, 14, MapPalette.TextPrimary);
-        _research = MakeLabel(row, 14, MapPalette.Accent);
-        _status = MakeLabel(row, 14, MapPalette.Warning);
-
-        row.AddChild(new Control { SizeFlagsHorizontal = SizeFlags.ExpandFill });
-
-        var pause = MakeButton(row, "Пауза");
-        pause.Pressed += () => SetSpeed(Speed > 0.0 ? 0.0 : 2.0);
-
-        _speedLabel = MakeLabel(row, 14, MapPalette.TextMuted);
-
-        foreach (double speed in new[] { 1.0, 3.0, 8.0 })
+        if (_body.Text != text)
         {
-            double value = speed;
-            Button button = MakeButton(row, $"x{(int)speed}");
-            button.Pressed += () => SetSpeed(value);
+            _body.Text = text;
         }
-
-        Button restart = MakeButton(row, "Новая карта");
-        restart.Pressed += () => SpeedChanged?.Invoke(-1.0);
-    }
-
-    public void Bind(SimulationEngine engine)
-    {
-        _engine = engine;
-    }
-
-    public void SetSpeed(double speed)
-    {
-        Speed = speed;
-        _speedLabel.Text = speed <= 0.0 ? "остановлено" : $"{speed:0.#} сут/с";
-        SpeedChanged?.Invoke(speed);
-    }
-
-    public void Refresh()
-    {
-        if (_engine is null)
-        {
-            return;
-        }
-
-        WorldMap map = _engine.Map;
-        double coverage = _engine.TotalInfectedEver / Math.Max(1e-9, map.TotalPopulation) * 100.0;
-
-        _world.Text = string.Join(
-            "   ",
-            $"День {_engine.Day:0} ({_engine.Years:0.00} г.)",
-            $"Инфекц. {WorldGenerator.FormatPopulation(_engine.TotalInfectious)}",
-            $"Умерло {WorldGenerator.FormatPopulation(_engine.TotalDead)}",
-            $"Охват {coverage:0.###}%",
-            $"R_t {_engine.InstantaneousReproduction:0.00}",
-            $"ДНК {_engine.Pathogen.AvailableDna:0.#}");
-
-        ResearchSystem research = _engine.Research;
-        string stage = research.Stage switch
-        {
-            ResearchStage.Cure => "лекарство разработано",
-            ResearchStage.Vaccine => "вакцина в производстве",
-            _ => "нет средств",
-        };
-
-        _research.Text = string.Join(
-            "   ",
-            $"Наука {research.Progress:0} / {EngineTargets(_engine)}",
-            stage,
-            $"эффективность лекарства {research.CureEffectiveness * 100.0:0}%",
-            research.Identified ? "патоген идентифицирован" : "патоген неизвестен");
-
-        _status.Text = DescribeStatus(_engine);
-        _status.AddThemeColorOverride("font_color", StatusColor(_engine.Status));
-    }
-
-    private static string EngineTargets(SimulationEngine engine)
-    {
-        return engine.Research.Stage switch
-        {
-            ResearchStage.Cure => engine.Config.VaccineThreshold.ToString("0"),
-            _ => engine.Config.CureThreshold.ToString("0"),
-        };
-    }
-
-    private static string DescribeStatus(SimulationEngine engine) => engine.Status switch
-    {
-        GameStatus.Running when engine.Research.Stage == ResearchStage.None
-                         && engine.Research.Setting == ResearchLevel.Off =>
-            "Исследования остановлены — учёные скоро это заметят",
-        GameStatus.Running => engine.Research.Stage switch
-        {
-            ResearchStage.Vaccine => "Вакцина идёт по миру",
-            _ => "Мир изучает патоген",
-        },
-        GameStatus.Victory => "ПОБЕДА: патоген охватил планету",
-        _ => "ПОРАЖЕНИЕ: носителей не осталось",
-    };
-
-    private static Color StatusColor(GameStatus status) => status switch
-    {
-        GameStatus.Victory => MapPalette.Success,
-        GameStatus.DefeatExtinct => MapPalette.Danger,
-        _ => MapPalette.Warning,
-    };
-
-    private static Label MakeLabel(Node parent, int fontSize, Color color)
-    {
-        var label = new Label();
-        label.AddThemeFontSizeOverride("font_size", fontSize);
-        label.AddThemeColorOverride("font_color", color);
-        parent.AddChild(label);
-        return label;
-    }
-
-    private static Button MakeButton(Node parent, string text)
-    {
-        var button = new Button { Text = text };
-        button.AddThemeFontSizeOverride("font_size", 13);
-        parent.AddChild(button);
-        return button;
-    }
-
-    internal static StyleBoxFlat PanelStyle()
-    {
-        var style = new StyleBoxFlat
-        {
-            BgColor = MapPalette.PanelBackground,
-            BorderColor = MapPalette.PanelBorder,
-        };
-        style.SetBorderWidthAll(1);
-        style.SetCornerRadiusAll(4);
-        return style;
     }
 }

@@ -1,5 +1,5 @@
 using System;
-using System.Linq;
+using System.Collections.Generic;
 using Godot;
 using NodeZero.App.Ui;
 using NodeZero.Core;
@@ -24,7 +24,18 @@ namespace NodeZero.App;
 /// </summary>
 public partial class Main : Node2D
 {
-    private const double BaseSpeed = 2.0;
+    /// <summary>Стадия партии.</summary>
+    private enum Phase
+    {
+        /// <summary>Игрок выбирает регион для нулевого пациента. Время стоит.</summary>
+        ChoosingStart,
+
+        /// <summary>Эпидемия идёт.</summary>
+        Running,
+
+        /// <summary>Партия закончилась.</summary>
+        Finished,
+    }
 
     private SimulationConfig _config = null!;
     private WorldMap _map = null!;
@@ -37,13 +48,18 @@ public partial class Main : Node2D
     private MutationPanel _mutationPanel = null!;
     private EventFeed _feed = null!;
     private Label _hint = null!;
+    private Label _notice = null!;
 
-    private double _speed = BaseSpeed;
+    private double _speed = 2.0;
     private bool _dragging;
-    private Vector2 _dragOrigin;
     private int _selectedCell = -1;
-    private bool _finished;
+    private Phase _phase = Phase.ChoosingStart;
     private ulong _seedCounter;
+    private bool _sceneBuilt;
+    private double _uiClock;
+    private double _inspectorClock;
+
+    private const double UiRefreshInterval = 0.16;
 
     public override void _Ready()
     {
@@ -63,10 +79,100 @@ public partial class Main : Node2D
         }
 
         _seedCounter = ReadSeed(args) ?? (ulong)Time.GetUnixTimeFromSystem();
+        BuildScene();
         BuildGame(ReadRadius(args));
     }
 
-    // --- Построение игры ---
+    // --- Построение сцены ---
+
+    /// <summary>
+    /// Создать дерево узлов. Вызывается ровно один раз: повторный вызов при
+    /// генерации новой карты навешивал бы второй слой интерфейса поверх первого,
+    /// и верхний слой перехватывал бы ввод, а подписи дублировались бы.
+    /// </summary>
+    private void BuildScene()
+    {
+        if (_sceneBuilt)
+        {
+            return;
+        }
+
+        _sceneBuilt = true;
+
+        _mapView = new HexMapView { Name = "Map" };
+        AddChild(_mapView);
+
+        _camera = new Camera2D { Name = "Camera", Enabled = true };
+        AddChild(_camera);
+
+        var layer = new CanvasLayer { Name = "Ui" };
+        AddChild(layer);
+
+        _topBar = new TopBar { Name = "TopBar" };
+        _topBar.SetAnchorsPreset(Control.LayoutPreset.TopWide);
+        _topBar.OffsetBottom = 46;
+        layer.AddChild(_topBar);
+        _topBar.SpeedChanged += OnSpeedChanged;
+        _topBar.RandomStartRequested += StartRandomOutbreak;
+
+        var right = new VBoxContainer { Name = "Right" };
+        right.AddThemeConstantOverride("separation", 8);
+        right.SetAnchorsPreset(Control.LayoutPreset.RightWide);
+        right.OffsetLeft = -560;
+        right.OffsetTop = 54;
+        right.OffsetRight = -8;
+        right.OffsetBottom = -8;
+        layer.AddChild(right);
+
+        _inspector = new HexInspector { Name = "Inspector", CustomMinimumSize = new Vector2(0, 190) };
+        right.AddChild(_inspector);
+
+        _mutationPanel = new MutationPanel
+        {
+            Name = "Mutations",
+            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
+        };
+        right.AddChild(_mutationPanel);
+
+        _feed = new EventFeed { Name = "Feed", CustomMinimumSize = new Vector2(0, 168) };
+        right.AddChild(_feed);
+
+        // Подписи живут внизу слева и не пересекаются с правой колонкой.
+        _hint = AddHint(layer, new Vector2(0.0f, -40.0f), MapPalette.TextMuted);
+        _notice = AddHint(layer, new Vector2(0.0f, -20.0f), MapPalette.Accent);
+
+        _mutationPanel.Notice += SetNotice;
+    }
+
+    /// <summary>
+    /// Подпись внизу слева, растянутая до левого края правой колонки.
+    /// Растягивание по горизонтали обязательно: при нулевом OffsetRight подпись
+    /// получает нулевую ширину и просто не рисуется.
+    /// </summary>
+    private static Label AddHint(CanvasLayer layer, Vector2 offset, Color color)
+    {
+        var label = new Label
+        {
+            MouseFilter = Control.MouseFilterEnum.Ignore,
+            TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis,
+        };
+        label.AddThemeFontSizeOverride("font_size", 12);
+        label.AddThemeColorOverride("font_color", color);
+
+        label.AnchorLeft = 0.0f;
+        label.AnchorRight = 1.0f;
+        label.AnchorTop = 1.0f;
+        label.AnchorBottom = 1.0f;
+        label.OffsetLeft = 14.0f;
+        label.OffsetRight = -576.0f;
+        label.OffsetTop = offset.Y;
+        label.OffsetBottom = offset.Y + 18.0f;
+
+        layer.AddChild(label);
+        return label;
+    }
+
+    // --- Построение партии ---
 
     private void BuildGame(int? radius)
     {
@@ -81,91 +187,6 @@ public partial class Main : Node2D
         _pathogen = new Pathogen(_config);
         _engine = new SimulationEngine(_map, _pathogen, _config);
 
-        if (GetNodeOrNull<Node2D>("World") is null)
-        {
-            BuildScene();
-        }
-
-        BindWorld();
-
-        int start = _engine.SuggestPatientZero();
-        if (start >= 0)
-        {
-            _engine.StartOutbreak(start);
-            _selectedCell = start;
-            _mapView.SetSelected(start);
-            _inspector.ShowCell(start);
-        }
-
-        _hint.Text =
-            $"Сид {_seedCounter}. ЛКМ — выбрать регион, средняя кнопка или пробел + движение — " +
-            "перетаскивание карты, колесо — зум.";
-    }
-
-    private void BuildScene()
-    {
-        _config ??= new SimulationConfig();
-
-        _mapView = new HexMapView { Name = "Map" };
-        AddChild(_mapView);
-
-        _camera = new Camera2D { Name = "Camera", Enabled = true, PositionSmoothingEnabled = false };
-        AddChild(_camera);
-
-        var layer = new CanvasLayer { Name = "Ui" };
-        AddChild(layer);
-
-        _topBar = new TopBar { Name = "TopBar" };
-        _topBar.SetAnchorsPreset(Control.LayoutPreset.TopWide);
-        _topBar.OffsetBottom = 46;
-        layer.AddChild(_topBar);
-        _topBar.SpeedChanged += OnSpeedChanged;
-
-        // Правая колонка: свойства региона, мутации, хроника.
-        var right = new VBoxContainer { Name = "Right" };
-        right.AddThemeConstantOverride("separation", 8);
-        right.SetAnchorsPreset(Control.LayoutPreset.RightWide);
-        right.OffsetLeft = -560;
-        right.OffsetTop = 54;
-        right.OffsetRight = -8;
-        right.OffsetBottom = -8;
-        layer.AddChild(right);
-
-        _inspector = new HexInspector
-        {
-            Name = "Inspector",
-            CustomMinimumSize = new Vector2(0, 236),
-        };
-        right.AddChild(_inspector);
-
-        _mutationPanel = new MutationPanel
-        {
-            Name = "Mutations",
-            SizeFlagsVertical = Control.SizeFlags.ExpandFill,
-        };
-        right.AddChild(_mutationPanel);
-
-        _feed = new EventFeed
-        {
-            Name = "Feed",
-            CustomMinimumSize = new Vector2(0, 168),
-        };
-        right.AddChild(_feed);
-
-        _hint = new Label
-        {
-            Name = "Hint",
-            Position = new Vector2(14, 54),
-        };
-        _hint.AddThemeFontSizeOverride("font_size", 12);
-        _hint.AddThemeColorOverride("font_color", MapPalette.TextMuted);
-        layer.AddChild(_hint);
-
-        _mutationPanel.Notice += text => _hint.Text = text;
-    }
-
-    private void BindWorld()
-    {
         _mapView.Bind(_engine);
         _topBar.Bind(_engine);
         _inspector.Bind(_engine);
@@ -175,10 +196,16 @@ public partial class Main : Node2D
         _camera.Position = Vector2.Zero;
         _camera.Zoom = FitZoom();
 
-        _finished = false;
-        _topBar.SetSpeed(_speed);
-        _topBar.Refresh();
-        _mutationPanel.Refresh();
+        _selectedCell = -1;
+        _mapView.SetSelected(-1);
+        _inspector.ShowCell(-1);
+        _phase = Phase.ChoosingStart;
+        _topBar.SetStartButtonVisible(true);
+
+        SetNotice(string.Empty);
+        SetHint(
+            $"Сид {_seedCounter}. Выберите регион для нулевого пациента — левый клик по гексу " +
+            "или кнопка «Случайный старт». Время стоит, пока вы выбираете.");
     }
 
     private Vector2 FitZoom()
@@ -190,7 +217,8 @@ public partial class Main : Node2D
 
         Vector2 viewport = GetViewportRect().Size;
         float fit = Math.Min(viewport.X, viewport.Y) / (_mapView.MapExtent.X * 2.1f);
-        return new Vector2(Mathf.Clamp(fit, 0.25f, 3.0f), Mathf.Clamp(fit, 0.25f, 3.0f));
+        float zoom = Mathf.Clamp(fit, 0.25f, 3.0f);
+        return new Vector2(zoom, zoom);
     }
 
     // --- Игровой цикл ---
@@ -202,25 +230,43 @@ public partial class Main : Node2D
             return;
         }
 
-        if (_speed > 0.0 && !_finished)
+        if (_phase == Phase.Running && _speed > 0.0)
         {
             _engine.AdvanceDays(_speed * delta);
+
             if (_engine.Status != GameStatus.Running)
             {
-                _finished = true;
-                _hint.Text = _engine.Status == GameStatus.Victory
-                    ? "Победа. Нажмите «Новая карта», чтобы начать заново."
-                    : "Поражение. Патоген исчез. Нажмите «Новая карта».";
+                _phase = Phase.Finished;
+                _topBar.SetStartButtonVisible(false);
+                SetHint(_engine.Status == GameStatus.Victory
+                    ? "Победа. N — новая карта."
+                    : "Поражение: носителей не осталось. N — новая карта.");
             }
         }
 
-        _topBar.Refresh();
+        // Интерфейс обновляется не чаще шести раз в секунду: иначе числа в полосе
+        // мельтешат, а строки инспектора пересобираются на каждом кадре впустую.
+        _uiClock += delta;
+        if (_uiClock < UiRefreshInterval)
+        {
+            return;
+        }
+
+        double now = Time.GetTicksMsec() / 1000.0;
+        _uiClock = 0.0;
+
+        _topBar.Refresh(nowSeconds: now);
         _mutationPanel.Refresh();
         _feed.Refresh();
 
-        if (_selectedCell >= 0)
+        _inspectorClock += UiRefreshInterval;
+        if (_inspectorClock >= UiRefreshInterval)
         {
-            _inspector.ShowCell(_selectedCell);
+            _inspectorClock = 0.0;
+            if (_selectedCell >= 0)
+            {
+                _inspector.ShowCell(_selectedCell);
+            }
         }
     }
 
@@ -234,6 +280,41 @@ public partial class Main : Node2D
         }
 
         _speed = value;
+    }
+
+    private void StartRandomOutbreak()
+    {
+        if (_phase != Phase.ChoosingStart)
+        {
+            return;
+        }
+
+        int start = _engine.SuggestPatientZero();
+        if (start >= 0)
+        {
+            BeginOutbreak(start);
+        }
+    }
+
+    private void BeginOutbreak(int cellIndex)
+    {
+        _engine.StartOutbreak(cellIndex);
+
+        _selectedCell = cellIndex;
+        _mapView.SetSelected(cellIndex);
+        _inspector.ShowCell(cellIndex);
+
+        _phase = Phase.Running;
+        _topBar.SetStartButtonVisible(false);
+        _topBar.SetSpeed(_speed > 0.0 ? _speed : 2.0);
+        _topBar.Refresh(force: true);
+
+        HexCell cell = _engine.Map.Cells[cellIndex];
+        SetHint(
+            $"Сид {_seedCounter}. ЛКМ — выбрать регион, средняя кнопка — тянуть карту, " +
+            $"колесо или плюс и минус — зум, пробел — пауза, F — вписать карту, N — новая карта. " +
+            $"Старт: {cell.Coord}, {ClimateData.Name(cell.Climate)}, " +
+            $"контактный вес {_engine.RelativeContactWeight(cellIndex):0.000}.");
     }
 
     // --- Ввод ---
@@ -250,27 +331,44 @@ public partial class Main : Node2D
             switch (button.ButtonIndex)
             {
                 case MouseButton.WheelUp:
+                    // Если курсор над прокручиваемой панелью, колесо принадлежит ей.
+                    if (IsPointerOverScrollable())
+                    {
+                        return;
+                    }
+
                     _camera.Zoom *= 1.12f;
                     break;
 
                 case MouseButton.WheelDown:
+                    if (IsPointerOverScrollable())
+                    {
+                        return;
+                    }
+
                     _camera.Zoom /= 1.12f;
                     break;
 
                 case MouseButton.Middle:
                     _dragging = button.Pressed;
-                    _dragOrigin = button.Position;
                     break;
 
                 case MouseButton.Left when button.Pressed:
                     int cell = _mapView.CellAtPoint(button.Position);
-                    if (cell >= 0)
+                    if (cell < 0)
                     {
-                        _selectedCell = cell;
-                        _mapView.SetSelected(cell);
-                        _inspector.ShowCell(cell);
+                        break;
                     }
 
+                    if (_phase == Phase.ChoosingStart)
+                    {
+                        BeginOutbreak(cell);
+                        break;
+                    }
+
+                    _selectedCell = cell;
+                    _mapView.SetSelected(cell);
+                    _inspector.ShowCell(cell);
                     break;
             }
 
@@ -294,7 +392,7 @@ public partial class Main : Node2D
             switch (key.Keycode)
             {
                 case Key.Space:
-                    _topBar.SetSpeed(_speed > 0.0 ? 0.0 : BaseSpeed);
+                    _topBar.SetSpeed(_speed > 0.0 ? 0.0 : 2.0);
                     break;
 
                 case Key.Key1:
@@ -309,9 +407,24 @@ public partial class Main : Node2D
                     _topBar.SetSpeed(8.0);
                     break;
 
+                case Key.Equal:
+                case Key.KpAdd:
+                    _camera.Zoom *= 1.12f;
+                    break;
+
+                case Key.Minus:
+                case Key.KpSubtract:
+                    _camera.Zoom /= 1.12f;
+                    break;
+
                 case Key.F:
                     _camera.Zoom = FitZoom();
                     _camera.Position = Vector2.Zero;
+                    break;
+
+                case Key.Enter:
+                case Key.KpEnter:
+                    StartRandomOutbreak();
                     break;
 
                 case Key.N:
@@ -319,6 +432,43 @@ public partial class Main : Node2D
                     BuildGame(null);
                     break;
             }
+        }
+    }
+
+    /// <summary>
+    /// Прокручивается ли под курсором панель. Требуется, чтобы колесо мыши над
+    /// списком мутаций или хроникой крутило список, а не приближало карту.
+    /// </summary>
+    private bool IsPointerOverScrollable()
+    {
+        Control? control = GetViewport().GuiGetHoveredControl();
+
+        while (control is not null)
+        {
+            if (control is ScrollContainer)
+            {
+                return true;
+            }
+
+            control = control.GetParent() as Control;
+        }
+
+        return false;
+    }
+
+    private void SetHint(string text)
+    {
+        if (_hint.Text != text)
+        {
+            _hint.Text = text;
+        }
+    }
+
+    private void SetNotice(string text)
+    {
+        if (_notice.Text != text)
+        {
+            _notice.Text = text;
         }
     }
 
