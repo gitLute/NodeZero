@@ -19,6 +19,9 @@ public enum MutationId
     Incubation = 12,
     Durability = 13,
 
+    // Приспособление к популяции
+    AntigenicDrift = 14,
+
     // Сопротивление среде
     ResistCold = 20,
     ResistHeat = 21,
@@ -165,6 +168,15 @@ public static class MutationCatalog
             "Инфекционный инфекционный период растёт — каждый больной заражает больше людей.",
             CategoryProperties,
             MaxLevel: 8, BaseCost: 2, CostStep: 2, StartsUnlocked: false),
+
+        new(
+            MutationId.AntigenicDrift,
+            "Антигенный дрейф",
+            "Сокращает срок иммунитета, и переболевшие заражаются повторно. " +
+            "Больше заболевших и больше смертей, но выше заразность, а значит " +
+            "люди быстрее замечают патоген.",
+            CategoryProperties,
+            MaxLevel: 5, BaseCost: 4, CostStep: 4, StartsUnlocked: false),
 
         // --- Сопротивление среде ---
         new(

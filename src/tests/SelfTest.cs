@@ -531,6 +531,77 @@ public static class SelfTest
                 "Полярная восприимчивость изменилась от теплоустойчивости.");
         });
 
+        runner.Case("Антигенный дрейф сокращает срок иммунитета монотонно", () =>
+        {
+            Pathogen pathogen = new(Base());
+            pathogen.EarnDna(1000.0);
+
+            double previous = pathogen.ImmunityDays;
+            runner.Check(previous > 0.0, "Базовый срок иммунитета не положителен.");
+
+            MutationDef def = MutationCatalog.Get(MutationId.AntigenicDrift);
+            for (int level = 1; level <= def.MaxLevel; level++)
+            {
+                runner.Check(pathogen.TryMutate(MutationId.AntigenicDrift, out _),
+                    $"Не удалось купить уровень {level} антигенного дрейфа.");
+
+                double current = pathogen.ImmunityDays;
+                runner.Check(current < previous,
+                    $"Уровень {level}: срок иммунитета {current:0.##} не уменьшился относительно {previous:0.##}.");
+                runner.Check(current >= 1.0,
+                    $"Уровень {level}: срок иммунитета упал ниже минимума: {current:0.##}.");
+                previous = current;
+            }
+
+            runner.Check(pathogen.IsAtMax(MutationId.AntigenicDrift),
+                "Достигнут максимальный уровень антигенного дрейфа.");
+        });
+
+        runner.Case("Без дрейфа срок иммунитета не меняется", () =>
+        {
+            Pathogen pathogen = new(Base());
+            double baseline = pathogen.ImmunityDays;
+            runner.CheckClose(pathogen.ImmunityDays, Base().ImmunityDays, 1e-9,
+                "Базовый срок иммунитета не совпадает с конфигурацией.");
+            runner.CheckClose(pathogen.WaningFraction(1.0),
+                1.0 - Math.Exp(-1.0 / baseline),
+                1e-12,
+                "Доля теряющих иммунитет не соответствует экспоненциальному закону.");
+        });
+
+        runner.Case("Антигенный дрейф увеличивает число повторных заболеваний", () =>
+        {
+            SimulationConfig plain = Base();
+            plain.ImmunityDays = 400.0;
+            plain.IdentificationThresholdFraction = 0.9;
+            plain.ResearchGain = 0.0;
+            plain.BaseReproductionNumber = 3.0;
+
+            SimulationConfig drifting = plain;
+            drifting.ImmunityDays = 400.0;
+
+            (_, SimulationEngine withoutDrift) = BuildScenario(plain);
+            withoutDrift.Research.Setting = ResearchLevel.Off;
+            withoutDrift.AdvanceDays(400.0);
+
+            (_, SimulationEngine withDrift) = BuildScenario(drifting);
+            withDrift.Research.Setting = ResearchLevel.Off;
+            withDrift.Pathogen.EarnDna(1000.0);
+            for (int i = 0; i < 5; i++)
+            {
+                withDrift.TryMutate(MutationId.AntigenicDrift, out _);
+            }
+
+            withDrift.AdvanceDays(400.0);
+
+            runner.Check(withDrift.TotalLostImmunity > withoutDrift.TotalLostImmunity * 2.0,
+                $"С дрейфом потеряли иммунитет {withDrift.TotalLostImmunity:0.###}, " +
+                $"без него {withoutDrift.TotalLostImmunity:0.###}: дрейф почти не влияет на повторные болезни.");
+            runner.Check(withDrift.TotalDead > withoutDrift.TotalDead,
+                $"С дрейфом умерло {withDrift.TotalDead:0.###}, без него {withoutDrift.TotalDead:0.###}: " +
+                "повторные заболевания обязаны добавлять смерти.");
+        });
+
         runner.Case("Полный бюджет ДНК покрывает весь каталог, но не более", () =>
         {
             runner.Check(MutationCatalog.TotalDna > 0, "Каталог мутаций пуст.");

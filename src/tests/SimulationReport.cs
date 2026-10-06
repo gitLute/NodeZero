@@ -84,6 +84,28 @@ public static class Strategies
             (525, MutationId.Infectivity),
         },
 
+        // Стратегия на повторных заболеваниях: сокращает иммунитет, чтобы
+        // переболевшие снова попадали в оборот.
+        // Стратегия на повторных заболеваниях. Схема та же, что у spread, но дрейф
+        // покупается вместо части заразности: сравнение показывает реальный размен,
+        // а не разницу в бюджете.
+        "relapse" => new[]
+        {
+            (20, MutationId.Water),
+            (45, MutationId.Infectivity),
+            (70, MutationId.Surface),
+            (95, MutationId.Infectivity),
+            (120, MutationId.AntigenicDrift),
+            (150, MutationId.Infectivity),
+            (185, MutationId.Insects),
+            (215, MutationId.Durability),
+            (245, MutationId.Infectivity),
+            (275, MutationId.AntigenicDrift),
+            (305, MutationId.Infectivity),
+            (340, MutationId.AntigenicDrift),
+            (375, MutationId.Infectivity),
+        },
+
         "stealth" => new[]
         {
             (25, MutationId.Incubation),
@@ -120,7 +142,7 @@ public static class Strategies
     };
 
     /// <summary>Все имена стратегий для справки.</summary>
-    public static readonly string[] Names = { "passive", "spread", "flame", "stealth", "brutal" };
+    public static readonly string[] Names = { "passive", "spread", "flame", "relapse", "stealth", "brutal" };
 }
 
 public static class SimulationReport

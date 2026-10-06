@@ -220,7 +220,8 @@ public partial class MutationPanel : PanelContainer
             $"R_t = {_engine.InstantaneousReproduction:0.00}",
             $"Инкубационный период {_engine.Pathogen.IncubationDays:0.0} сут   " +
             $"заразный период {_engine.Pathogen.InfectiousDays:0.0} сут   " +
-            $"иммунитет {_engine.Pathogen.ImmunityDays:0} сут",
+            $"иммунитет {_engine.Pathogen.ImmunityDays:0} сут " +
+            $"({_engine.Pathogen.ImmunityToInfectiousRatio:0.0} заразных периодов)",
             $"Симптомы есть у {_engine.Pathogen.SymptomaticFraction * 100.0:0.#}% заражённых   " +
             $"смертность {_engine.Pathogen.SeverityFactor * 100.0:0.0}%   " +
             $"устойчивость к медицине {_engine.Pathogen.MedicineResistanceFactor * 100.0:0.#}%",
