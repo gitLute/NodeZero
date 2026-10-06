@@ -131,7 +131,7 @@ public partial class TopBar : Panel
         _lastUpdateSeconds = nowSeconds;
 
         SimulationEngine engine = _engine;
-        double coverage = engine.TotalInfectedEver / Math.Max(1e-9, engine.Map.TotalPopulation) * 100.0;
+        double coverage = engine.InfectedEverShare * 100.0;
 
         SetText(_date, $"День {engine.Day:0} · {engine.Years:0.00} г");
         SetText(_infectious, $"Инф. {WorldGenerator.FormatPopulation(engine.TotalInfectious)}");
@@ -373,6 +373,7 @@ public partial class HexInspector : PanelContainer
             $"Не заражены: {covered:0.#}%   инфекционные: {infectiousShare:0.###}%",
             $"Переболели: {WorldGenerator.FormatPopulation(cell.Recovered)}   " +
             $"умерли: {WorldGenerator.FormatPopulation(cell.Dead)} ({deadShare:0.#}%)",
+            $"Болели хотя бы раз: {cell.EverInfected / Math.Max(1e-9, cell.Population) * 100.0:0.##}%",
             $"Вакцинация: {cell.VaccineCoverage * 100.0:0.#}%");
 
         _title.Text = $"{cell.Coord} — {ClimateData.Name(cell.Climate)}";

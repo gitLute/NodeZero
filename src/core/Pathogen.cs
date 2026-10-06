@@ -174,6 +174,27 @@ public sealed class Pathogen
     /// <summary>Скорость выздоровления без учёта медицины, 1/день.</summary>
     public double Gamma => 1.0 / Math.Max(0.25, InfectiousDays);
 
+    /// <summary>
+    /// Средний срок утраты иммунитета после выздоровления, сутки.
+    /// </summary>
+    /// <remarks>
+    /// Иммунитет не бессрочный, а угасает экспоненциально: каждый переболевший
+    /// теряет защиту с постоянной вероятностью в единицу времени, поэтому
+    /// срок у всех разный и «некоторые» переболевшие остаются защищёнными
+    /// дольше других. В ячейке это выражается переходом R -- S.
+    /// </remarks>
+    public double ImmunityDays => Math.Max(1.0, Config.ImmunityDays);
+
+    /// <summary>
+    /// Доля переболевших, теряющих иммунитет за шаг длительностью dt.
+    /// </summary>
+    /// <remarks>
+    /// Считается точно для постоянной скорости угасания: 1 - exp(-dt/срок).
+    /// Приближение dt/срок при крупном шаге даёт долю больше единицы и, соответственно,
+    /// отрицательный остаток переболевших.
+    /// </remarks>
+    public double WaningFraction(double dt) => 1.0 - Math.Exp(-dt / ImmunityDays);
+
     /// <summary>Смертность в регионе с нулевой медициной, доля за инфекционный период.</summary>
     public double SeverityFactor =>
         0.015 * Math.Pow(SeverityPerLevel, Level(MutationId.Severity));

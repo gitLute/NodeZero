@@ -280,7 +280,7 @@ public static class SelfTest
             config.BaseReproductionNumber = 4.0;
             (_, SimulationEngine engine) = BuildScenario(config);
             engine.AdvanceDays(120.0);
-            double share = engine.TotalInfectedEver / engine.Map.TotalPopulation;
+            double share = engine.InfectedEverShare;
             runner.Check(share > 0.01,
                 $"За 120 суток заразилось только {share * 100.0:0.###}% населения.");
         });
@@ -297,7 +297,7 @@ public static class SelfTest
 
             runner.Check(engine.Status == GameStatus.DefeatExtinct,
                 $"Ожидалось вымирание патогена, получено состояние {engine.Status} " +
-                $"(заразилось {engine.TotalInfectedEver:0.##E+0}).");
+                $"(переболевшие {engine.InfectedEverShare * 100.0:0.###}%).");
         });
 
         runner.Case("Более высокое R0 всегда быстрее распространяет патоген", () =>
@@ -312,9 +312,9 @@ public static class SelfTest
             weak.AdvanceDays(150.0);
             strong.AdvanceDays(150.0);
 
-            runner.Check(strong.TotalInfectedEver > weak.TotalInfectedEver,
-                $"Сильный патоген заразил {strong.TotalInfectedEver:0.###}, " +
-                $"слабый — {weak.TotalInfectedEver:0.###}.");
+            runner.Check(strong.InfectedEverShare > weak.InfectedEverShare,
+                $"Сильный патоген охватил {strong.InfectedEverShare * 100.0:0.###}% населения, " +
+                $"слабый — {weak.InfectedEverShare * 100.0:0.###}%.");
         });
 
         output.WriteLine("== Исследования, лекарство, вакцина ==");
@@ -544,6 +544,116 @@ public static class SelfTest
             runner.CheckClose(pathogen.EarnedDna, cap, 1e-6, "Потолок заработка ДНК не соблюдён.");
         });
 
+        output.WriteLine("== Угасание иммунитета ==");
+        runner.Case("Короткий иммунитет возвращает переболевших в восприимчивые", () =>
+        {
+            SimulationConfig config = Base();
+            config.ImmunityDays = 30.0;
+            config.IdentificationThresholdFraction = 0.9;
+            config.ResearchGain = 0.0;
+
+            (_, SimulationEngine engine) = BuildScenario(config);
+            engine.Research.Setting = ResearchLevel.Off;
+            engine.AdvanceDays(400.0);
+
+            double reused = 0.0;
+            foreach (int index in engine.Map.LandIndices)
+            {
+                HexCell cell = engine.Map.Cells[index];
+                if (cell.EverInfected > 1000.0 && cell.Susceptible > cell.EverInfected * 0.05)
+                {
+                    reused++;
+                }
+            }
+
+            runner.Check(reused > 0,
+                "Ни в одном поражённом регионе не появилось восприимчивых: иммунитет не угасает.");
+        });
+
+        runner.Case("Длинный иммунитет не возвращает переболевших в восприимчивые", () =>
+        {
+            // Сравниваются два прогона на одном и том же мире, различающиеся только
+            // сроком иммунитета. Мерой служит счётчик потерявших иммунитет, а не
+            // число восприимчивых: во время активной эпидемии восприимчивые
+            // расходуются быстрее, чем возвращаются, и знак приращения неустойчив.
+            static double MeasureLostImmunity(double immunityDays)
+            {
+                SimulationConfig config = Base();
+                config.ImmunityDays = immunityDays;
+                config.IdentificationThresholdFraction = 0.9;
+                config.ResearchGain = 0.0;
+
+                (_, SimulationEngine engine) = BuildScenario(config);
+                engine.Research.Setting = ResearchLevel.Off;
+                engine.AdvanceDays(400.0);
+
+                return engine.TotalLostImmunity;
+            }
+
+            double withWaning = MeasureLostImmunity(25.0);
+            double withoutWaning = MeasureLostImmunity(100000.0);
+
+            runner.Check(withWaning > 1e6,
+                $"При коротком иммунитете иммунитет потеряли лишь {withWaning:0.###} человек.");
+
+            // При «вечном» иммунитете потери не обнуляются, а составляют численную
+            // погрешность экспоненты: 1 - exp(-dt/срок) не равно нулю даже при сроке
+            // в сто тысяч суток. Поэтому сравнение только по отношению, а не по
+            // точному нулю.
+            runner.Check(withoutWaning < withWaning * 1e-3,
+                $"Короткий иммунитет ({withWaning:0.###}) и практически вечный " +
+                $"({withoutWaning:0.###}) дают сопоставимые потери: срок иммунитета " +
+                "не влияет на модель.");
+        });
+
+        runner.Case("Счётчик переболевших монотонен и не считает повторные болезни", () =>
+        {
+            SimulationConfig config = Base();
+            config.ImmunityDays = 25.0;
+            config.IdentificationThresholdFraction = 0.9;
+            config.ResearchGain = 0.0;
+
+            (_, SimulationEngine engine) = BuildScenario(config);
+            engine.Research.Setting = ResearchLevel.Off;
+
+            double previous = engine.TotalInfectedEver;
+            double maxShare = 0.0;
+            for (int step = 0; step < 400; step++)
+            {
+                engine.AdvanceDays(1.0);
+
+                runner.Check(engine.TotalInfectedEver >= previous - 1e-6,
+                    $"Счётчик переболевших уменьшился: {previous:0.###} -> {engine.TotalInfectedEver:0.###}.");
+                previous = engine.TotalInfectedEver;
+
+                maxShare = Math.Max(maxShare, engine.InfectedEverShare);
+
+                foreach (int index in engine.Map.LandIndices)
+                {
+                    HexCell cell = engine.Map.Cells[index];
+                    runner.Check(cell.EverInfected >= 0.0 && cell.EverInfected <= cell.Population + 1e-6,
+                        $"Счётчик переболевших региона вышел за пределы населения: {cell.EverInfected:0.###}");
+                }
+            }
+
+            // Доля людей, болевших повторно, не должна превышать 100 %.
+            runner.Check(maxShare <= 1.0,
+                $"Доля переболевших превысила 100 %: {maxShare * 100.0:0.###} %. Повторные болезни посчитаны повторно.");
+        });
+
+        runner.Case("Угасание иммунитета сохраняет баланс массы", () =>
+        {
+            SimulationConfig config = Base();
+            config.ImmunityDays = 20.0;
+
+            (WorldMap map, SimulationEngine engine) = BuildScenario(config);
+            engine.AdvanceDays(300.0);
+
+            runner.Check(map.MassBalanceError() < 1e-6,
+                $"Баланс нарушен: относительная ошибка {map.MassBalanceError():0.##E+0}. " +
+                "Переход переболевших в восприимчивые меняет число, но не население.");
+        });
+
         output.WriteLine("== Победа ==");
         runner.Case("Быстрый патоген при отключённых исследованиях охватывает мир", () =>
         {
@@ -568,7 +678,7 @@ public static class SelfTest
                 engine.AdvanceDays(10.0);
             }
 
-            double coverage = engine.TotalInfectedEver / engine.Map.TotalPopulation;
+            double coverage = engine.InfectedEverShare;
             runner.Check(engine.Status == GameStatus.Victory,
                 $"Ожидалась победа, получено состояние {engine.Status}; охват {coverage * 100.0:0.##}%.");
         });

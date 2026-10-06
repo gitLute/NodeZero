@@ -69,6 +69,19 @@ public sealed class HexCell
     /// <summary>Покрытие вакциной, 0..1.</summary>
     public double VaccineCoverage { get; set; }
 
+    /// <summary>
+    /// Число жителей, которые ещё ни разу не болели. Величина только убывает.
+    /// </summary>
+    /// <remarks>
+    /// Нужна, чтобы отличать «болели один раз» от «болели многократно». Прямой
+    /// подсчёт заражений дал бы двойной счёт при повторных болезнях, а сумма
+    /// текущих компартментов S+E+I+R+D без неё врёт: утративший иммунитет
+    /// возвращается в S и из выражения выпадает. Разность
+    /// <c>Population - NeverInfectedSusceptible</c> даёт число людей, переболевших
+    /// хотя бы один раз, и остаётся монотонной при любом сроке иммунитета.
+    /// </remarks>
+    public double NeverInfectedSusceptible { get; set; }
+
     /// <summary>Накопленное число выявленных (а не фактических) случаев. Именно оно видно учёным.</summary>
     public double ReportedCases { get; set; }
 
@@ -98,10 +111,16 @@ public sealed class HexCell
         VaccineCoverage = 0.0;
         ReportedCases = 0.0;
         OutbreakReported = false;
+        NeverInfectedSusceptible = Population;
     }
 
     /// <summary>Сумма всех компартментально значимых величин. Должна совпадать с исходным населением.</summary>
     public double TotalCompartments => Susceptible + Exposed + Infectious + Recovered + Dead;
+
+    /// <summary>
+    /// Число жителей, переболевших хотя бы один раз. Монотонно растёт.
+    /// </summary>
+    public double EverInfected => Population - NeverInfectedSusceptible;
 
     public void ResetDynamicState()
     {

@@ -141,16 +141,28 @@ public sealed class SimulationEngine
 
     public double TotalDead { get; private set; }
 
+    /// <summary>
+    /// Число людей, переболевших патогеном хотя бы один раз за партию.
+    ///
+    /// <para>Величина строго монотонна, и это её главное свойство: на неё
+    /// опираются порог победы, порог идентификации и начисление очков эволюции.
+    /// Счётчик заражений для этого не годится -- при угасании иммунитета один
+    /// человек учитывается многократно. Сумма текущих компартментов тоже не
+    /// годится -- потерявший иммунитет возвращается в восприимчивые и из суммы
+    /// выпадает, хотя болел. Соответственно, охват -- это именно доля людей,
+    /// а не доля населения на данный момент.</para>
+    /// </summary>
+    public double TotalInfectedEver { get; private set; }
+
+    /// <summary>Доля населения, переболевшего хотя бы один раз, 0..1.</summary>
+    public double InfectedEverShare => Map.TotalPopulation > 0.0
+        ? TotalInfectedEver / Map.TotalPopulation
+        : 0.0;
+
     public double TotalReported { get; private set; }
 
     /// <summary>Восприимчивое население с учётом вакцины.</summary>
     public double TotalEffectiveSusceptible { get; private set; }
-
-    /// <summary>
-    /// Сколько людей заразилось за всю партию: инфекционные, переболевшие и
-    /// умершие. Величина монотонна, поэтому надёжно служит порогом секвенирования.
-    /// </summary>
-    public double TotalInfectedEver => TotalInfectious + TotalRecovered + TotalDead;
 
     /// <summary>
     /// Мгновенное репродуктивное число R_t: сколько новых заражений приходится
@@ -332,13 +344,16 @@ public sealed class SimulationEngine
 
         double exposedThisStep = 0.0;
         double exitedThisStep = 0.0;
+        double lostImmunityStep = 0.0;
         for (int i = 0; i < _landToCell.Length; i++)
         {
             HexCell cell = CellOfLocalIndex(i);
             _force[i] = ComputeForce(i);
             _beta[i] = ComputeBeta(i, cell);
-            IntegrateCell(i, cell, dt, ref exposedThisStep, ref exitedThisStep);
+            IntegrateCell(i, cell, dt, ref exposedThisStep, ref exitedThisStep, ref lostImmunityStep);
         }
+
+        _lostImmunityTotal += lostImmunityStep;
 
         _exposedThisDay += exposedThisStep;
         _exitedThisDay += exitedThisStep;
@@ -412,11 +427,47 @@ public sealed class SimulationEngine
     }
 
     /// <summary>Шаг SEIR для одного региона. Возвращает число новых инфицированных.</summary>
-    private void IntegrateCell(int localIndex, HexCell cell, double dt, ref double exposedOut, ref double exitedOut)
+    private double _lostImmunityTotal;
+
+    /// <summary>
+    /// Число человек, потерявших иммунитет за всю партию и снова ставших
+    /// восприимчивыми. Нужен для проверки угасания иммунитета: само число
+    /// переболевших не показывает, вернулись ли они в строй.
+    /// </summary>
+    public double TotalLostImmunity => _lostImmunityTotal;
+
+    /// <summary>Шаг SEIR для одного региона. Через ref-параметры возвращает потоки.</summary>
+    /// <param name="localIndex">Индекс региона в массиве наземных.</param>
+    /// <param name="cell">Сам регион.</param>
+    /// <param name="dt">Шаг интегрирования, сутки.</param>
+    /// <param name="exposedOut">Новые заражённые за шаг.</param>
+    /// <param name="exitedOut">Выбывшие из активной фазы за шаг.</param>
+    /// <param name="refLostImmunity">Потерявшие иммунитет за шаг.</param>
+    private void IntegrateCell(
+        int localIndex,
+        HexCell cell,
+        double dt,
+        ref double exposedOut,
+        ref double exitedOut,
+        ref double refLostImmunity)
     {
         if (cell.LivingPopulation <= 0.0)
         {
             return;
+        }
+
+        // Угасание иммунитета. Применяется к запасу переболевших на начало шага,
+        // чтобы только что выздоровевшие не теряли иммунитет в том же шаге.
+        // Доля теряющих иммунитет считается точно для постоянной скорости
+        // (1 - exp(-dt/срок)), а не приближённо как dt/срок: приближение при
+        // крупном шаге способно дать отрицательный остаток.
+        double waning = Pathogen.WaningFraction(dt);
+        if (waning > 0.0 && cell.Recovered > 0.0)
+        {
+            double reSuscepted = cell.Recovered * waning;
+            cell.Recovered -= reSuscepted;
+            cell.Susceptible += reSuscepted;
+            refLostImmunity += reSuscepted;
         }
 
         double vaccine = Config.VaccineEffectiveness * cell.VaccineCoverage
@@ -436,6 +487,12 @@ public sealed class SimulationEngine
         {
             newExposed = 0.0;
         }
+
+        // Из новых заражённых первый раз болеют только те, кто ещё не болел.
+        // Ограничение снизу не даёт счётчику уйти в отрицательные значения,
+        // когда бо́льшая часть потока приходится на повторные болезни.
+        double firstTime = Math.Min(newExposed, cell.NeverInfectedSusceptible);
+        cell.NeverInfectedSusceptible -= firstTime;
 
         double toInfectious = cell.Exposed * Math.Min(1.0, Pathogen.Sigma * dt);
 
@@ -486,10 +543,7 @@ public sealed class SimulationEngine
             TotalInfectedEver,
             Pathogen.MedicineResistanceFactor);
 
-        double infectedShare = Map.TotalPopulation > 0.0
-            ? TotalInfectedEver / Map.TotalPopulation
-            : 0.0;
-        double dna = (Config.DnaBaseRate + Config.DnaInfectionRate * Math.Sqrt(Math.Max(0.0, infectedShare)))
+        double dna = (Config.DnaBaseRate + Config.DnaInfectionRate * Math.Sqrt(Math.Max(0.0, InfectedEverShare)))
                      * (1.0 + 0.5 * Pathogen.SeverityFactor);
         Pathogen.EarnDna(dna);
 
@@ -579,11 +633,11 @@ public sealed class SimulationEngine
         }
 
         if (Map.TotalPopulation > 0.0
-            && TotalInfectedEver >= Config.VictoryInfectionThreshold * Map.TotalPopulation)
+            && InfectedEverShare >= Config.VictoryInfectionThreshold)
         {
             Status = GameStatus.Victory;
             AddEvent(GameEventKind.Victory,
-                $"Победа: охвачено {TotalInfectedEver / Map.TotalPopulation * 100.0:0.##}% населения, " +
+                $"Победа: переболело {InfectedEverShare * 100.0:0.##}% населения, " +
                 $"уничтожено {WorldGenerator.FormatPopulation(TotalDead)} за {Years:0.0} лет.");
             return;
         }
@@ -622,6 +676,7 @@ public sealed class SimulationEngine
         double recovered = 0.0;
         double dead = 0.0;
         double reported = 0.0;
+        double everInfected = 0.0;
         double effectiveSusceptible = 0.0;
         double affectedSusceptible = 0.0;
 
@@ -636,6 +691,7 @@ public sealed class SimulationEngine
             recovered += cell.Recovered;
             dead += cell.Dead;
             reported += cell.ReportedCases;
+            everInfected += cell.EverInfected;
 
             double vaccine = Config.VaccineEffectiveness * cell.VaccineCoverage
                              * (1.0 - 0.6 * medicineResistanceFactor);
@@ -654,6 +710,7 @@ public sealed class SimulationEngine
         TotalRecovered = recovered;
         TotalDead = dead;
         TotalReported = reported;
+        TotalInfectedEver = everInfected;
         TotalEffectiveSusceptible = effectiveSusceptible;
         AffectedSusceptible = affectedSusceptible;
     }

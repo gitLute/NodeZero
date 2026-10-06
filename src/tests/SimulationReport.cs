@@ -309,10 +309,11 @@ public static class SimulationReport
         output.WriteLine();
         output.WriteLine($"Итоговое состояние: {engine.Status}, день {engine.Day:0} ({engine.Years:0.0} лет)");
         output.WriteLine(
-            $"Инфицировано за партию: {engine.TotalInfectedEver / Math.Max(1e-9, map.TotalPopulation) * 100.0:0.##}% населения, " +
+            $"Переболевшие за партию: {engine.InfectedEverShare * 100.0:0.##}%, " +
             $"умерло {engine.TotalDead / Math.Max(1e-9, map.TotalPopulation) * 100.0:0.##}%");
         output.WriteLine($"Баланс массы (относительная ошибка): {map.MassBalanceError():0.##E+0}");
         output.WriteLine(
+            $"Иммунитет: срок {engine.Pathogen.ImmunityDays:0} сут, потеряли {engine.TotalLostImmunity:0.###} чел.",
             $"Исследования: прогресс {engine.Research.Progress:0.0}, стадия {engine.Research.Stage}, " +
             $"лекарство {engine.Research.CureEffectiveness * 100.0:0.#}%, " +
             $"идентификация {(engine.Research.Identified ? "да" : "нет")}, " +

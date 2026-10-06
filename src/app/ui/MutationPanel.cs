@@ -219,11 +219,13 @@ public partial class MutationPanel : PanelContainer
             $"бета = {_engine.Pathogen.BasicReproduction / Math.Max(0.01, _engine.Pathogen.InfectiousDays):0.000}/сут   " +
             $"R_t = {_engine.InstantaneousReproduction:0.00}",
             $"Инкубационный период {_engine.Pathogen.IncubationDays:0.0} сут   " +
-            $"заразный период {_engine.Pathogen.InfectiousDays:0.0} сут",
+            $"заразный период {_engine.Pathogen.InfectiousDays:0.0} сут   " +
+            $"иммунитет {_engine.Pathogen.ImmunityDays:0} сут",
             $"Симптомы есть у {_engine.Pathogen.SymptomaticFraction * 100.0:0.#}% заражённых   " +
             $"смертность {_engine.Pathogen.SeverityFactor * 100.0:0.0}%   " +
             $"устойчивость к медицине {_engine.Pathogen.MedicineResistanceFactor * 100.0:0.#}%",
-            $"ДНК: доступно {pathogen.AvailableDna:0.#} из возможных {pathogen.DnaCap:0.#}");
+            $"ДНК: доступно {pathogen.AvailableDna:0.#} из возможных {pathogen.DnaCap:0.#}   " +
+            $"переболевших {_engine.InfectedEverShare * 100.0:0.#}% населения");
 
         foreach (Row row in _rows)
         {
